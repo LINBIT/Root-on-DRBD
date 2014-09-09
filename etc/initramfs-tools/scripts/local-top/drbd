@@ -1,0 +1,40 @@
+# vim:ts=4:sw=4:noet
+# attach DRBD
+
+
+# lvm2 and mdadm should already have been done.
+PREREQ=""
+prereqs()
+{
+	echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+
+. /scripts/functions
+
+modprobe -q drbd
+
+[ "$quiet" != "y" ] && log_begin_msg "Attaching DRBD"
+
+export PATH=$PATH:/lib/drbd/:
+
+## INSERT HERE
+/sbin/drbdsetup new-resource cacao-backup  
+/sbin/drbdsetup new-minor cacao-backup 9 0 
+/sbin/drbdmeta 9 v08 /dev/sda2 internal apply-al 
+/sbin/drbdsetup attach 9 /dev/sda2 /dev/sda2 internal --on-io-error=detach --al-extents=40
+## INSERT END
+
+[ "$quiet" != "y" ] && log_end_msg
+
+
+/sbin/drbdsetup primary 9 ||   # Fix minor!
+    ( drbdsetup primary 9 --force ;
+      log_warning_msg "Needed to *force* DRBD" )

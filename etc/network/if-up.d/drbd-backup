@@ -1,0 +1,30 @@
+#!/bin/bash
+
+set -e
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+[[ "$MODE" == "start" ]] || exit 0
+# Fix identifying your network 
+[[ "$DHCP4_ROUTERS" == "10.3.7.1" ]] || exit 0
+
+
+drbdadm connect cacao-backup || true
+
+# Now wait a few seconds; if the connection gets established, do 
+# a trim/discard, so that unused blocks are not needlessly synced.
+(
+    if drbdsetup wait-connect 9 --wfc-timeout 14 ; then
+        fstrim -v /
+
+        drbdsetup wait-sync 9
+
+		# after a resync disconnect again.
+        sleep 3
+        drbdadm disconnect cacao-backup
+    else
+        echo got error $! $?
+    fi
+) &
+
+exit 0
