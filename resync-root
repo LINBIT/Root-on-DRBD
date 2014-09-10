@@ -1,0 +1,175 @@
+#!/bin/sh
+# vim: sw=4 ts=4 et :
+
+# yum install busybox
+
+
+
+NEW_ROOT=/mnt/resync-root/
+OLD_ROOT=old-root
+# busybox "readlink" 1.15 doesn't know --canonicalize 
+ME="$(readlink -f "$0")"
+
+DRBD_RES_TO_RESYNC="all"
+
+set -e
+
+# Is a function, so that there's no STDERR output when running stage2.
+files_to_restore() {
+    ls -1 /etc/sysconfig/network-scripts/ifcfg-* /etc/sysconfig/network
+}
+programs() {
+    ls -1 /sbin/drbd*
+}
+
+
+stage_1() {
+
+    export root_drbd=$(grep '/dev/.* / ' /proc/mounts | cut -f1 -d" ")
+    if [[ "$root_drbd" != "/dev/drbd"* ]] ; then
+        echo "Root is mounted from $root_drbd, which is not a DRBD device."
+        echo "Please re-read the Root-on-DRBD TechGuide."
+        echo "Cannot proceed."
+        exit 1
+    fi
+    root_minor=$(stat -c %T "$root_drbd" -L)
+
+
+    echo "doing stage-1."
+    mkdir -p "$NEW_ROOT"
+    mount -t tmpfs none "$NEW_ROOT"
+
+    cd "$NEW_ROOT"
+
+# copy needed programs, libraries, any myself.
+    rsync -vaR /sbin/busybox $(programs) $(ldd $(programs) | grep /lib | cut -f2- -d/ | cut -f1 -d" " | sort -u) "$ME" .
+
+
+    mkdir -p bin "$OLD_ROOT" proc sys dev etc
+#   for i in $(busybox --list) # grmbl, RHEL6 has busybox 1.15...
+    for i in $(busybox | grep "^Currently defined functions" -A 200 | tail -n +2 | sed 's/,//g') # grmbl, RHEL6 has busybox 1.15...
+    do
+        ln -s ../sbin/busybox "bin/$i"
+    done
+
+    drbdadm dump $DRBD_RES_TO_RESYNC > etc/drbd.conf
+    ln -s /proc/mounts /etc/mtab
+
+    cd /
+    tar -cf "$NEW_ROOT"/SIK.tar $(files_to_restore)
+
+
+    cd "$NEW_ROOT"
+    mount none -t proc proc
+    mount none -t sysfs sys
+    mount --bind /dev dev       # should be a separate tmpfs for udev
+    pivot_root . "$OLD_ROOT"    # this ensures that all process that try to respawn children will have a hard time to do so ...
+    exec setsid chroot . "$ME" stage-2
+}
+
+stage_2() {
+    echo "doing stage-2."
+
+    cd /
+
+
+    # switch init/upstart away.
+    # Is implicitly a timeout, by way of a kernel panic ...
+    echo '#!/bin/sh
+        exec sleep 1d
+        ' > /sbin/init
+    chmod +x /sbin/init
+    telinit u
+
+
+# Only ro-remount is not enough - we need to go Secondary for --discard-my-data.
+# And to go Secondary we need to umount
+# And a running SSHd has (currently) no way to re-exec or switch the TCP to plaintext...
+# So the only thing we could do is to provide a "please go to telnet:///|http://" link
+    echo "UPGRADE IN PROGRESS."
+    echo "some kind of progress can be found via TCP port :23 ..."
+    
+    # We'll lose our STDIN, STDOUT, etc. in a few seconds.
+    exec > /progress 2>&1 < /dev/null
+
+    while true ; do
+#        nc -l -p 23 -e drbdsetup status all # drbd9
+        nc -l -p 23 -e cat /proc/drbd /progress
+    done > /tmp/.telnet 2>&1 < /dev/null &
+
+
+    # kill other processes...
+    set -- INT QUIT TERM KILL
+    while ! umount "$OLD_ROOT"
+    do
+        # something's got a hold on my heart
+        echo "sending $1 ..."
+        fuser -k -${1:-KILL} -v "$OLD_ROOT"
+
+        shift
+        sleep 1
+    done
+
+    echo "Now / is unmounted. UPDATING."
+    drbdadm secondary $DRBD_RES_TO_RESYNC
+    drbdadm connect --discard-my-data $DRBD_RES_TO_RESYNC
+
+    # start background jobs for waiting
+    for minor in $(drbdadm sh-minor $DRBD_RES_TO_RESYNC); do
+        ( drbdsetup wait-sync $minor ; echo "drbd$minor is sync'ed up" ) &
+    done
+
+    wait
+
+
+    # now the devices are UpToDate... at least we hope.
+    drbdadm disconnect $DRBD_RES_TO_RESYNC
+    # go primary, so that these will get a split brain next time - on purpose!
+    drbdadm primary $DRBD_RES_TO_RESYNC
+
+    # restore saved files
+    echo "restoring..."
+    mount "$root_drbd" "$OLD_ROOT"
+    cd "$OLD_ROOT"
+    tar -xf /SIK.tar
+    # done...
+
+    umount  -a
+    sync
+    sync
+    echo "reboot..."
+    echo b > /proc/sysrq-trigger
+    echo "ERROR"
+    while true ; do sleep 1d ; done
+}
+
+
+if [[ ! -x /sbin/busybox  ]] ; then
+    echo "You'll need to have busybox installed."
+    echo "Aborting."
+    exit 1
+fi
+
+
+case "$1" in
+    stage-1)
+        stage_1;;
+    stage-2)
+        stage_2;;
+    -h*|--help*|-?|""|help|h)
+        echo "This script KILLS ALL PROCESSES, updates your root filesystem"
+        echo "via DRBD, but restores the files"
+        for f in $(files_to_restore) ; do
+            echo "   $f"
+        done
+        echo "from the current root."
+        echo ""
+        echo "Run it again, with argument 'stage-1' to proceed - if you dare,"
+        echo "  AND KNOW WHAT YOU'RE DOING."
+    ;;
+    *)
+        echo "Usage error. Please try with '--help'."
+        echo "THIS SCRIPT CAN DESTROY YOUR DATA."
+        ;;
+esac
+
