@@ -152,10 +152,6 @@ fi
 
 
 case "$1" in
-    stage-1)
-        stage_1;;
-    stage-2)
-        stage_2;;
     -h*|--help*|-?|""|help|h)
         echo "This script KILLS ALL PROCESSES, updates your root filesystem"
         echo "via DRBD, but restores the files"
@@ -167,6 +163,15 @@ case "$1" in
         echo "Run it again, with argument 'stage-1' to proceed - if you dare,"
         echo "  AND KNOW WHAT YOU'RE DOING."
     ;;
+    *)
+        echo "This script is highly experimental."
+        echo "Please check it before continuing."
+        exit 1
+    ;;
+    stage-1)
+        stage_1;;
+    stage-2)
+        stage_2;;
     *)
         echo "Usage error. Please try with '--help'."
         echo "THIS SCRIPT CAN DESTROY YOUR DATA."
