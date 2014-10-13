@@ -5,6 +5,8 @@ set -e
 export PATH=/sbin:/bin:/usr/sbin:/usr/bin
 
 [[ "$MODE" == "start" ]] || exit 0
+[[ "$ADDRFAM" == "inet" ]] || exit 0
+
 # Fix identifying your network 
 [[ "$DHCP4_ROUTERS" == "10.3.7.1" ]] || exit 0
 
