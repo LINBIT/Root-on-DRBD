@@ -1,0 +1,9 @@
+# vim: set ft=bash : 
+
+
+hook_stop() {
+# all remaining DRBDs: try to minimize next resync (eg. for root filesystem on DRBD).
+	for minor in $(drbdsetup sh-status all | sed -ne 's/^_minor=//p') ; do
+		$DRBDSETUP "$minor" disk-options --al-extents 13
+	done
+}
