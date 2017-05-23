@@ -1,0 +1,12 @@
+[Unit]
+Description=Adjusting DRBD
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/drbdadm-adjust.sh
+RemainAfterExit=true
+StandardOutput=journal
+
+[Install]
+WantedBy=network-online.target
